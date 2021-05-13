@@ -23,9 +23,9 @@
 #include "getopt_long.h"
 #include "rmgrdesc.h"
 
-
+#define BSIZE 8192
 static const char *progname;
-
+static char page[BSIZE];
 typedef struct XLogDumpPrivate
 {
 	TimeLineID	timeline;
@@ -44,7 +44,8 @@ typedef struct XLogDumpConfig
 	bool		follow;
 	bool		stats;
 	bool		stats_per_record;
-
+    unsigned int file_node;
+    unsigned int bkp_no;
 	/* filter options */
 	int			filter_by_rmgr;
 	TransactionId filter_by_xid;
@@ -465,7 +466,32 @@ XLogDumpDisplayRecord(XLogDumpConfig *config, XLogReaderState *record)
 					   rnode.spcNode, rnode.dbNode, rnode.relNode,
 					   blk);
 			if (XLogRecHasBlockImage(record, block_id))
-				printf(" FPW");
+			{
+                printf(" FPW");
+                if (rnode.relNode == config->file_node && blk == config->bkp_no)
+                {
+                    char		fpath[MAXPGPATH];
+                    snprintf(fpath, MAXPGPATH, "%d_%d_%X_%08X",
+                             rnode.relNode, blk, (uint32) (record->ReadRecPtr >> 32), (uint32) record->ReadRecPtr);
+                    memset(page, 0, BSIZE);
+                    if (!RestoreBlockImage(record, block_id, page))
+                        printf("failed to restore block image");
+
+                    int fd = open(fpath, O_RDWR | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
+                    if (fd < 0)
+                        printf("open file error: %s", fpath);
+
+
+                    if (write(fd, page,  BSIZE) != BSIZE)
+                    {
+                        printf("write file error: %s", fpath);
+                    }
+
+                    if (close(fd))
+                        printf("could not close file: %s", fpath); 
+                }
+                
+			}
 		}
 		putchar('\n');
 	}
@@ -719,6 +745,8 @@ main(int argc, char **argv)
 		{"xid", required_argument, NULL, 'x'},
 		{"version", no_argument, NULL, 'V'},
 		{"stats", optional_argument, NULL, 'z'},
+        {"file_node", required_argument, NULL, 'd'},
+        {"block_no", required_argument, NULL, 'k'},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -745,14 +773,16 @@ main(int argc, char **argv)
 	config.filter_by_xid_enabled = false;
 	config.stats = false;
 	config.stats_per_record = false;
-
+    config.file_node = 0;
+    config.bkp_no = 0;
+    
 	if (argc <= 1)
 	{
 		fprintf(stderr, "%s: no arguments specified\n", progname);
 		goto bad_argument;
 	}
 
-	while ((option = getopt_long(argc, argv, "be:?fn:p:r:s:t:Vx:z",
+	while ((option = getopt_long(argc, argv, "be:?fn:p:r:s:t:Vx:z:d:k:",
 								 long_options, &optindex)) != -1)
 	{
 		switch (option)
@@ -860,6 +890,30 @@ main(int argc, char **argv)
 					}
 				}
 				break;
+            case 'd':
+                config.file_node = 0;
+
+                if (sscanf(optarg, "%u", &config.file_node) != 1)
+                {
+                    fprintf(stderr, "%s: could not file_node \"%s\"\n",
+                            progname, optarg);
+                    
+                    goto bad_argument;
+                }
+                
+                break;
+            case 'k':
+                config.bkp_no = 0;
+                
+                if (sscanf(optarg, "%u", &config.bkp_no) != 1)
+                {
+                    fprintf(stderr, "%s: could not bkp_no \"%s\"\n",
+                            progname, optarg);
+                    
+                    goto bad_argument;
+                }
+                
+                break;   
 			default:
 				goto bad_argument;
 		}
